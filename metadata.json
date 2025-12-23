@@ -1,0 +1,5 @@
+{
+  "name": "QuizMind AI",
+  "description": "A premium AI-powered quiz platform that transforms your documents (PDF, CSV, or Text) into interactive, shuffled, and real-time quiz experiences using Gemini 3.",
+  "requestFramePermissions": []
+}
