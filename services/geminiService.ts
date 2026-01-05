@@ -29,40 +29,36 @@ const extractionSchema = {
   required: ["title", "questions"]
 };
 
+const generateSignature = (data: any): string => {
+  const str = JSON.stringify(data.questions.map((q: any) => q.question).sort());
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return `quiz-${Math.abs(hash)}`;
+};
+
 export const extractQuizData = async (file: File): Promise<QuizData> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
   const base64Data = await new Promise<string>((resolve) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      resolve(result.split(',')[1]);
-    };
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
     reader.readAsDataURL(file);
   });
 
-  const mimeType = file.type || 'application/octet-stream';
-  
-  const prompt = `
-    Extract all multiple-choice questions from this document. 
-    For each question, identify the question text, all available options, and the correct answer.
-    Return the result as a structured JSON object.
-    Ensure that the 'correctAnswer' field exactly matches one of the options.
-  `;
-
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: [
-      {
-        parts: [
-          { inlineData: { data: base64Data, mimeType } },
-          { text: prompt }
-        ]
-      }
-    ],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: extractionSchema as any
+    contents: { 
+      parts: [
+        { inlineData: { data: base64Data, mimeType: file.type || 'application/pdf' } }, 
+        { text: "Act as a quiz generator. Extract every multiple-choice question from this document. Identify all options and the exact correct answer for each. Return the data strictly following the provided JSON schema." }
+      ] 
+    },
+    config: { 
+      responseMimeType: "application/json", 
+      responseSchema: extractionSchema as any 
     }
   });
 
@@ -71,22 +67,23 @@ export const extractQuizData = async (file: File): Promise<QuizData> => {
 
 export const extractQuizDataFromText = async (text: string): Promise<QuizData> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const prompt = `
-    Extract multiple-choice questions from the following text/CSV content.
-    The expected format is likely: Question, Option A, Option B, Option C, Option D, Answer.
-    Parse this content carefully and return a structured JSON object.
-    
-    Content:
-    ${text}
-  `;
-
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: extractionSchema as any
+    contents: { 
+      parts: [{ text: `Convert the following content into a structured MCQ quiz.
+      
+      Format Guidelines:
+      - If it's a standard CSV: Questions, Option A, B, C, D, Answer.
+      - If it's the alternate CSV: Question Text, Options (separated by |), Answer.
+      - ALWAYS extract the correct answer text. If the source says 'C', find the text for option C.
+      - Return EVERY question found in the input.
+
+      Content:
+      ${text}` }] 
+    },
+    config: { 
+      responseMimeType: "application/json", 
+      responseSchema: extractionSchema as any 
     }
   });
 
@@ -95,14 +92,16 @@ export const extractQuizDataFromText = async (text: string): Promise<QuizData> =
 
 const parseGeminiResponse = (jsonString: string): QuizData => {
   try {
-    const data = JSON.parse(jsonString);
-    data.questions = data.questions.map((q: any, idx: number) => ({
+    const cleanJson = jsonString.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+    const data = JSON.parse(cleanJson);
+    const quizId = generateSignature(data);
+    const questions = data.questions.map((q: any, idx: number) => ({
       ...q,
-      id: `q-${idx}-${Math.random().toString(36).substr(2, 9)}`
+      id: `${quizId}-q-${idx}`
     }));
-    return data as QuizData;
+    return { id: quizId, title: data.title, questions };
   } catch (error) {
-    console.error("Failed to parse Gemini response:", error);
-    throw new Error("Could not process the input. Ensure it contains valid questions and options.");
+    console.error("Parse error:", error);
+    throw new Error("The AI response was malformed. Please try again or use a different file.");
   }
 };
